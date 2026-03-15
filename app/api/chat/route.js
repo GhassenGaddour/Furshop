@@ -10,26 +10,28 @@ export async function POST(request) {
     );
   }
 
-  const systemPrompt = `You are FurShop, a pet product assistant. When a user asks for product recommendations, you MUST output each product using this EXACT block format — no exceptions, no variations:
+  const systemPrompt = `You are FurShop, a pet product assistant. You always respond in valid JSON with this exact structure:
 
-ITEM_START
-NAME: Royal Canin Labrador Adult
-BRAND: Royal Canin
-PRICE: €55
-DESCRIPTION: Specially formulated for Labradors with high protein and joint support. Helps maintain healthy weight.
-PET_TYPE: dog
-ITEM_END
+{
+  "intro": "A brief 1-sentence intro",
+  "products": [
+    {
+      "name": "Product name",
+      "brand": "Brand name",
+      "price": "€XX",
+      "description": "1-2 sentences about the product.",
+      "pet_type": "dog"
+    }
+  ],
+  "tip": "A brief tip or follow-up (optional, can be empty string)"
+}
 
-CRITICAL RULES — you MUST follow these exactly:
-1. Every product MUST be wrapped in ITEM_START and ITEM_END
-2. Every block MUST have all 5 fields: NAME, BRAND, PRICE, DESCRIPTION, PET_TYPE
-3. NO blank lines between fields inside a block
-4. PET_TYPE must be exactly "dog" or "cat" (lowercase only)
-5. Always suggest 3-5 products
-6. Write a 1-sentence intro before the blocks
-7. Write a brief tip or question after the blocks
-8. Do NOT include URLs or links
-9. If the user just says hi or is vague, ask what their pet needs before suggesting products`;
+Rules:
+- Always include 3-5 products when the user asks for recommendations
+- pet_type must be exactly "dog" or "cat"
+- If the user is vague, still suggest products — do not ask clarifying questions
+- Never output anything outside the JSON object
+- Respond ONLY with the JSON, no markdown, no code fences`;
 
   const groqMessages = [
     { role: "system", content: systemPrompt },
@@ -51,6 +53,7 @@ CRITICAL RULES — you MUST follow these exactly:
         messages: groqMessages,
         temperature: 0.7,
         max_tokens: 2048,
+        response_format: { type: "json_object" },
       }),
     });
 
@@ -61,7 +64,20 @@ CRITICAL RULES — you MUST follow these exactly:
       return Response.json({ error: groqData.error.message }, { status: 500 });
     }
 
-    let text = groqData.choices?.[0]?.message?.content || "";
+    let text = "";
+    const raw = groqData.choices?.[0]?.message?.content || "{}";
+    try {
+      const parsed = JSON.parse(raw);
+      const intro = parsed.intro || "";
+      const tip = parsed.tip || "";
+      const products = parsed.products || [];
+      const blocks = products.map(p =>
+        `ITEM_START\nNAME: ${p.name}\nBRAND: ${p.brand}\nPRICE: ${p.price}\nDESCRIPTION: ${p.description}\nPET_TYPE: ${p.pet_type || "dog"}\nITEM_END`
+      ).join("\n\n");
+      text = [intro, blocks, tip].filter(Boolean).join("\n\n");
+    } catch (e) {
+      text = raw;
+    }
 
     if (SERPER_API_KEY) {
       const itemRegex = new RegExp("ITEM_START\\s+NAME:\\s*(.+?)\\s*\\nBRAND:\\s*(.+?)\\s*\\nPRICE:\\s*(.+?)\\s*\\nDESCRIPTION:\\s*([\\s\\S]+?)\\nPET_TYPE:\\s*(.+?)\\s*\\nITEM_END", "g");
