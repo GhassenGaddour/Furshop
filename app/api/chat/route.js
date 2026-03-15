@@ -80,7 +80,9 @@ Rules:
     } catch (e) {
       text = raw;
     }
-
+      text = text.replace(/PET_TYPE:\s*(.+?)\s*\nITEM_END/g, (match, petType) => {
+      return `PET_TYPE: ${petType}\nURL: \nIMAGE: \nITEM_END`;
+    });
     if (SERPER_API_KEY) {
       const itemRegex = new RegExp("ITEM_START\\s+NAME:\\s*(.+?)\\s*\\nBRAND:\\s*(.+?)\\s*\\nPRICE:\\s*(.+?)\\s*\\nDESCRIPTION:\\s*([\\s\\S]+?)\\nPET_TYPE:\\s*(.+?)\\s*\\nITEM_END", "g");
       const matches = [...text.matchAll(itemRegex)];
