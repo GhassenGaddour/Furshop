@@ -73,9 +73,10 @@ Rules:
       const intro = parsed.intro || "";
       const tip = parsed.tip || "";
       const products = parsed.products || [];
-      const blocks = products.map(p =>
-        `ITEM_START\nNAME: ${p.name}\nBRAND: ${p.brand}\nPRICE: ${p.price}\nDESCRIPTION: ${p.description}\nPET_TYPE: ${p.pet_type || "dog"}\nITEM_END`
-      ).join("\n\n");
+      const blocks = products.map(p => {
+        const fallbackUrl = `https://www.google.com/search?q=${encodeURIComponent(p.brand + ' ' + p.name + ' buy')}`;
+        return `ITEM_START\nNAME: ${p.name}\nBRAND: ${p.brand}\nPRICE: ${p.price}\nDESCRIPTION: ${p.description}\nPET_TYPE: ${p.pet_type || "dog"}\nURL: ${fallbackUrl}\nIMAGE: \nITEM_END`;
+      }).join("\n\n");
       text = [intro, blocks, tip].filter(Boolean).join("\n\n");
     } catch (e) {
       text = raw;
