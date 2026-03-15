@@ -37,7 +37,9 @@ Rules:
     { role: "system", content: systemPrompt },
     ...messages.map((msg) => ({
       role: msg.role === "assistant" ? "assistant" : "user",
-      content: msg.content,
+      content: msg.role === "assistant"
+        ? msg.content.replace(/ITEM_START[\s\S]*?ITEM_END/g, "[products shown]").replace(/\n{3,}/g, "\n\n").trim()
+        : msg.content,
     })),
   ];
 
