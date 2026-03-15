@@ -29,6 +29,8 @@ export async function POST(request) {
 Rules:
 - Always include 3-5 products when the user asks for recommendations
 - pet_type must be exactly "dog" or "cat"
+- Use REAL product names and brands that actually exist and can be purchased online
+- Do NOT invent fictional products — only recommend products you know are real
 - If the user is vague, still suggest products — do not ask clarifying questions
 - Never output anything outside the JSON object
 - Respond ONLY with the JSON, no markdown, no code fences`;
@@ -66,38 +68,40 @@ Rules:
       return Response.json({ error: groqData.error.message }, { status: 500 });
     }
 
-    let text = "";
     const raw = groqData.choices?.[0]?.message?.content || "{}";
+    let intro = "";
+    let tip = "";
+    let products = [];
+
     try {
       const parsed = JSON.parse(raw);
-      const intro = parsed.intro || "";
-      const tip = parsed.tip || "";
-      const products = parsed.products || [];
-      const blocks = products.map(p => {
-        const fallbackUrl = `https://www.google.com/search?q=${encodeURIComponent(p.brand + ' ' + p.name + ' buy')}`;
-        return `ITEM_START\nNAME: ${p.name}\nBRAND: ${p.brand}\nPRICE: ${p.price}\nDESCRIPTION: ${p.description}\nPET_TYPE: ${p.pet_type || "dog"}\nURL: ${fallbackUrl}\nIMAGE: \nITEM_END`;
-      }).join("\n\n");
-      text = [intro, blocks, tip].filter(Boolean).join("\n\n");
+      intro = parsed.intro || "";
+      tip = parsed.tip || "";
+      products = parsed.products || [];
     } catch (e) {
-      text = raw;
+      // If JSON parsing fails, return raw text
+      return Response.json({ text: raw });
     }
-      text = text.replace(/PET_TYPE:\s*(.+?)\s*\nITEM_END/g, (match, petType) => {
-      return `PET_TYPE: ${petType}\nURL: \nIMAGE: \nITEM_END`;
-    });
-    if (SERPER_API_KEY) {
-      const itemRegex = new RegExp("ITEM_START\\s+NAME:\\s*(.+?)\\s*\\nBRAND:\\s*(.+?)\\s*\\nPRICE:\\s*(.+?)\\s*\\nDESCRIPTION:\\s*([\\s\\S]+?)\\nPET_TYPE:\\s*(.+?)\\s*\\nITEM_END", "g");
-      const matches = [...text.matchAll(itemRegex)];
 
-      console.log(`Found ${matches.length} items to enrich`);
+    // ─── Enrich each product with real shopping links and images ───
+    const enrichedProducts = await Promise.all(
+      products.map(async (p) => {
+        const name = p.name || "";
+        const brand = p.brand || "";
+        const petType = (p.pet_type || "dog").toLowerCase();
+        const price = p.price || "";
+        const description = p.description || "";
 
-      const enriched = await Promise.all(
-        matches.map(async (m) => {
-          const name = m[1].trim();
-          const brand = m[2].trim();
-          const price = m[3].trim();
-          const petType = m[5].trim().toLowerCase();
-          const query = `${brand} ${name} ${petType} buy online`;
+        // Build a clean search query (avoid doubling the brand if it's already in the name)
+        const nameIncludesBrand = name.toLowerCase().includes(brand.toLowerCase());
+        const searchName = nameIncludesBrand ? name : `${brand} ${name}`;
+        const query = `${searchName} ${petType === "cat" ? "cat" : "dog"} pet shop`;
 
+        let url = "";
+        let imageUrl = "";
+        let realPrice = price;
+
+        if (SERPER_API_KEY) {
           try {
             const serperRes = await fetch("https://google.serper.dev/shopping", {
               method: "POST",
@@ -105,44 +109,60 @@ Rules:
                 "Content-Type": "application/json",
                 "X-API-KEY": SERPER_API_KEY,
               },
-              body: JSON.stringify({ q: query, num: 1 }),
+              body: JSON.stringify({
+                q: query,
+                num: 5,
+                gl: "de",
+                hl: "de",
+              }),
             });
 
             const serperData = await serperRes.json();
-            const result = serperData.shopping?.[0];
+            const results = serperData.shopping || [];
 
-            console.log(`Serper result for "${query}":`, result?.link, result?.imageUrl);
+            console.log(`Serper query: "${query}" → ${results.length} results`);
 
-            return {
-              original: m[0],
-              name, brand,
-              url: result?.link || "https://www.google.com/search?q=" + encodeURIComponent(query),
-              imageUrl: result?.imageUrl || "",
-              price: result?.price || price,
-            };
+            // Pick the best result: prefer ones with both a link and an image
+            const bestResult = results.find(r => r.link && r.imageUrl)
+              || results.find(r => r.link)
+              || results[0];
+
+            if (bestResult) {
+              url = bestResult.link || "";
+              imageUrl = bestResult.imageUrl || "";
+              // Use the real price from the shop if available
+              if (bestResult.price) {
+                realPrice = bestResult.price;
+              }
+              console.log(`  → URL: ${url}`);
+              console.log(`  → Image: ${imageUrl}`);
+              console.log(`  → Price: ${realPrice}`);
+            }
           } catch (e) {
             console.error(`Serper error for "${query}":`, e.message);
-            return {
-              original: m[0],
-              name, brand,
-              url: "https://www.google.com/search?q=" + encodeURIComponent(query),
-              imageUrl: "",
-              price,
-            };
           }
-        })
-      );
+        }
 
-      enriched.forEach(({ original, url, imageUrl, price }) => {
-        const enrichedBlock = original
-          .replace(/PRICE:\s*.+/, `PRICE: ${price}`)
-          .replace("ITEM_END", `URL: ${url}\nIMAGE: ${imageUrl}\nITEM_END`);
-        text = text.replace(original, enrichedBlock);
-      });
-    }
+        // Fallback: Google search link if Serper didn't return a direct link
+        if (!url) {
+          url = `https://www.google.com/search?q=${encodeURIComponent(searchName + " buy")}`;
+        }
+
+        return { name, brand, price: realPrice, description, petType, url, imageUrl };
+      })
+    );
+
+    // ─── Build the final response text ───
+    const blocks = enrichedProducts
+      .map(
+        (p) =>
+          `ITEM_START\nNAME: ${p.name}\nBRAND: ${p.brand}\nPRICE: ${p.price}\nDESCRIPTION: ${p.description}\nPET_TYPE: ${p.petType}\nURL: ${p.url}\nIMAGE: ${p.imageUrl}\nITEM_END`
+      )
+      .join("\n\n");
+
+    const text = [intro, blocks, tip].filter(Boolean).join("\n\n");
 
     return Response.json({ text });
-
   } catch (error) {
     console.error("Fetch error:", error.message);
     return Response.json({ error: "Connection issue — please try again." }, { status: 500 });
